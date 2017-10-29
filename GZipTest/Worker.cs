@@ -14,6 +14,8 @@ namespace GZipTest
 
         public Worker(CompressionMode mode)
         {
+            Data = null;
+            Compressed = null;
             dataSetted = new Semaphore(0, 1);
             workDone = new Semaphore(0, 1);
             if (mode == CompressionMode.Compress)
@@ -49,6 +51,16 @@ namespace GZipTest
 
             return result;
         }
+        private byte[] RemoveExt(byte[] data)
+        {
+            data[3] = 0;
+            var result = new byte[data.Length - 8];
+            for (int i = 0; i < 10; i++)
+                result[i] = data[i];
+            for (int i = 18; i < data.Length; i++)
+                result[i - 8] = data[i];
+            return result;
+        }
         private void CompressInternal()
         {
             while (true)
@@ -74,6 +86,7 @@ namespace GZipTest
                 dataSetted.WaitOne();
                 if (Compressed == null)
                     return;
+                Compressed = RemoveExt(Compressed);
                 Data = new byte[BitConverter.ToInt32(Compressed, Compressed.Length - 4)];
                 using (MemoryStream stream = new MemoryStream(Compressed))
                 {
