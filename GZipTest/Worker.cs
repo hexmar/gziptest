@@ -7,17 +7,15 @@ namespace GZipTest
 {
     class Worker
     {
-        private byte[] data;
-        private byte[] compressed;
+        public byte[] Data { get; set; }
+        public byte[] Compressed { get; set; }
         private Thread thread;
         private readonly Semaphore dataSetted, workDone;
 
-        public Worker(ref byte[] data, ref byte[] compressed, CompressionMode mode)
+        public Worker(CompressionMode mode)
         {
-            this.data = data;
-            this.compressed = compressed;
             dataSetted = new Semaphore(0, 1);
-            workDone = new Semaphore(1, 1);
+            workDone = new Semaphore(0, 1);
             if (mode == CompressionMode.Compress)
                 thread = new Thread(CompressInternal);
             else
@@ -56,15 +54,15 @@ namespace GZipTest
             while (true)
             {
                 dataSetted.WaitOne();
-                if (data == null)
+                if (Data == null)
                     return;
                 using (MemoryStream stream = new MemoryStream())
                 {
                     using (GZipStream gz = new GZipStream(stream, CompressionMode.Compress))
                     {
-                        gz.Write(data, 0, data.Length);
+                        gz.Write(Data, 0, Data.Length);
                     }
-                    compressed = AddExt(stream.ToArray());
+                    Compressed = AddExt(stream.ToArray());
                 }
                 workDone.Release(); 
             }
@@ -74,14 +72,14 @@ namespace GZipTest
             while (true)
             {
                 dataSetted.WaitOne();
-                if (compressed == null)
+                if (Compressed == null)
                     return;
-                data = new byte[BitConverter.ToInt32(compressed, compressed.Length - 4)];
-                using (MemoryStream stream = new MemoryStream(compressed))
+                Data = new byte[BitConverter.ToInt32(Compressed, Compressed.Length - 4)];
+                using (MemoryStream stream = new MemoryStream(Compressed))
                 {
                     using (GZipStream gz = new GZipStream(stream, CompressionMode.Decompress))
                     {
-                        gz.Read(data, 0, data.Length);
+                        gz.Read(Data, 0, Data.Length);
                     }
                 }
                 workDone.Release();
