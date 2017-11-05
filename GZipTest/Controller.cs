@@ -52,6 +52,7 @@ namespace GZipTest
         const int dataBlockSize = 0x100000;
 
         readonly string inFile, outFile;
+        Worker[] workers;
 
         public Controller(string inFilePath, string outFilePath)
         {
@@ -71,129 +72,70 @@ namespace GZipTest
 
         public void Compress()
         {
-            using (FileStream inStream = new FileStream(inFile, FileMode.Open, FileAccess.Read,
-                                                        FileShare.Read, 0x200000,
-                                                        FileOptions.SequentialScan),
-                              outStream = new FileStream(outFile, FileMode.Append))
+            using (var outStream = new FileStream(outFile, FileMode.Append))
             {
-                int blockSize;
-                byte[] data, compressed;
-                Worker[] workers = new Worker[threadCount];
-                for (int i = 0; i < threadCount; i++)
-                    workers[i] = new Worker(CompressionMode.Compress);
-
-                Console.WriteLine("Compressing...");
-
-                while (inStream.Position < inStream.Length)
+                byte[] compressed;
+                workers = new Worker[threadCount];
+                for (int i = 0, position = 0; i < threadCount; i++, position += dataBlockSize)
+                    workers[i] = new Worker(inFile, position, CompressionMode.Compress, i, this);
+                for (int thread = 0; !workers[thread].EndOfFile; thread = (thread + 1) == threadCount ? 0 : thread + 1)
                 {
-                    for (int block = 0;
-                         (block < threadCount) && (inStream.Position < inStream.Length);
-                         block++)
+                    workers[thread].WaitData();
+                    compressed = new byte[workers[thread].Compressed.Length];
+                    workers[thread].Compressed.CopyTo(compressed, 0);
+                    workers[thread].GetData();
+                    try
                     {
-                        if (inStream.Length - inStream.Position < dataBlockSize)
-                            blockSize = (int)(inStream.Length - inStream.Position);
-                        else
-                            blockSize = dataBlockSize;
-                        data = new byte[blockSize];
-                        inStream.Read(data, 0, blockSize);
-                        workers[block].Data = data;
-                        workers[block].SetData();
+                        outStream.Write(compressed, 0, compressed.Length);
                     }
-                    for (int block = 0; (block < threadCount) && (workers[block].Data != null); block++)
+                    catch (Exception)
                     {
-                        workers[block].WaitData();
-                        compressed = workers[block].Compressed;
-                        try
+                        for (int i = 0; i < threadCount; i++)
                         {
-                            outStream.Write(compressed, 0, compressed.Length);
+                            workers[i].Abort = true;
+                            workers[i].GetData();
                         }
-                        catch (Exception)
-                        {
-                            for (int i = 0; i < threadCount; i++)
-                            {
-                                workers[i].Data = null;
-                                workers[i].SetData();
-                            }
-                            throw;
-                        }
-                        workers[block].Data = null;
+                        throw;
                     }
                 }
-
-                for (int i = 0; i < threadCount; i++)
-                    workers[i].SetData();
             }
         }
 
         public void Decompress()
         {
-            using (FileStream inStream = new FileStream(inFile, FileMode.Open, FileAccess.Read,
-                                                        FileShare.Read, 0x200000,
-                                                        FileOptions.SequentialScan),
-                              outStream = new FileStream(outFile, FileMode.Append))
+            using (var outStream = new FileStream(outFile, FileMode.Append))
             {
-                int blockSize;
-                byte[] data, compressed;
-                Worker[] workers = new Worker[threadCount];
+                byte[] decompressed;
+                workers = new Worker[threadCount];
                 for (int i = 0; i < threadCount; i++)
-                    workers[i] = new Worker(CompressionMode.Decompress);
-
-                Console.WriteLine("Decompressing...");
-
-                while (inStream.Position < inStream.Length)
+                    workers[i] = new Worker(inFile, 0, CompressionMode.Decompress, i, this);
+                workers[0].SetPosition(0);
+                for (int thread = 0; !workers[thread].EndOfFile; thread = (thread + 1) == threadCount ? 0 : thread + 1)
                 {
-                    for (int block = 0;
-                         (block < threadCount) && (inStream.Position < inStream.Length);
-                         block++)
+                    workers[thread].WaitData();
+                    decompressed = new byte[workers[thread].Data.Length];
+                    workers[thread].Data.CopyTo(decompressed, 0);
+                    workers[thread].GetData();
+                    try
                     {
-                        byte[] info = new byte[18];
-                        inStream.Read(info, 0, info.Length);
-                        if (!ValidExt(info))
-                            throw new Exception("File has incompatible format.");
-                        blockSize = BitConverter.ToInt32(info, info.Length - 4);
-                        compressed = new byte[blockSize];
-                        info.CopyTo(compressed, 0);
-                        inStream.Read(compressed, 18, blockSize - 18);
-                        workers[block].Compressed = compressed;
-                        workers[block].SetData();
+                        outStream.Write(decompressed, 0, decompressed.Length);
                     }
-                    for (int block = 0;
-                         (block < threadCount) && (workers[block].Compressed != null);
-                         block++)
+                    catch (Exception)
                     {
-                        workers[block].WaitData();
-                        data = workers[block].Data;
-                        try
+                        for (int i = 0; i < threadCount; i++)
                         {
-                            outStream.Write(data, 0, data.Length);
+                            workers[i].Abort = true;
+                            workers[i].GetData();
                         }
-                        catch (Exception)
-                        {
-                            for (int i = 0; i < threadCount; i++)
-                            {
-                                workers[i].Compressed = null;
-                                workers[i].SetData();
-                            }
-                            throw;
-                        }
-                        workers[block].Compressed = null;
+                        throw;
                     }
                 }
-
-                for (int i = 0; i < threadCount; i++)
-                    workers[i].SetData();
             }
         }
 
-        private bool ValidExt(byte[] info)
+        public void SetNextPosition(int thread, long position)
         {
-            if ((info[3] & 4) == 0)
-                return false;
-            if ((info[10] != 'G') || (info[11] != 'T'))
-                return false;
-            if ((info[12] != 4) || (info[13] != 0))
-                return false;
-            return true;
+            workers[(thread + 1) == threadCount ? 0 : (thread + 1)].SetPosition(position);
         }
     }
 }
