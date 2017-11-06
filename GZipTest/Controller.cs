@@ -11,16 +11,19 @@ namespace GZipTest
         const int dataBlockSize = 0x100000;
 
         readonly string inFile, outFile;
-        Worker[] workers;
+        private Worker[] workers;
+        volatile private bool abort;
+        volatile private Exception exception;
 
         public Controller(string inFilePath, string outFilePath)
         {
             inFile = inFilePath;
             outFile = outFilePath;
+            abort = false;
             try
             {
-                using (FileStream stream = new FileStream(inFile, FileMode.Open));
-                using (FileStream stream = new FileStream(outFile, FileMode.CreateNew));
+                using (var stream = new FileStream(inFile, FileMode.Open));
+                using (var stream = new FileStream(outFile, FileMode.CreateNew));
             }
             catch (Exception e)
             {
@@ -39,6 +42,7 @@ namespace GZipTest
                     workers[i] = new Worker(inFile, position, CompressionMode.Compress, i, this);
                 for (int thread = 0; !workers[thread].EndOfFile; thread = (thread + 1) == threadCount ? 0 : thread + 1)
                 {
+                    if (abort) throw exception;
                     workers[thread].WaitData();
                     compressed = new byte[workers[thread].Compressed.Length];
                     workers[thread].Compressed.CopyTo(compressed, 0);
@@ -47,13 +51,9 @@ namespace GZipTest
                     {
                         outStream.Write(compressed, 0, compressed.Length);
                     }
-                    catch (Exception)
+                    catch (Exception e)
                     {
-                        for (int i = 0; i < threadCount; i++)
-                        {
-                            workers[i].Abort = true;
-                            workers[i].GetData();
-                        }
+                        StopWork(e);
                         throw;
                     }
                 }
@@ -71,6 +71,7 @@ namespace GZipTest
                 workers[0].SetPosition(0);
                 for (int thread = 0; !workers[thread].EndOfFile; thread = (thread + 1) == threadCount ? 0 : thread + 1)
                 {
+                    if (abort) throw exception;
                     workers[thread].WaitData();
                     decompressed = new byte[workers[thread].Data.Length];
                     workers[thread].Data.CopyTo(decompressed, 0);
@@ -79,13 +80,9 @@ namespace GZipTest
                     {
                         outStream.Write(decompressed, 0, decompressed.Length);
                     }
-                    catch (Exception)
+                    catch (Exception e)
                     {
-                        for (int i = 0; i < threadCount; i++)
-                        {
-                            workers[i].Abort = true;
-                            workers[i].GetData();
-                        }
+                        StopWork(e);
                         throw;
                     }
                 }
@@ -95,6 +92,26 @@ namespace GZipTest
         public void SetNextPosition(int thread, long position)
         {
             workers[(thread + 1) == threadCount ? 0 : (thread + 1)].SetPosition(position);
+        }
+
+        public void StopWork(Exception e)
+        {
+            exception = e;
+            abort = true;
+            for (int i = 0; i < threadCount; i++)
+            {
+                workers[i].Abort = true;
+                try
+                {
+                    workers[i].SetPosition(Int64.MaxValue);
+                }
+                catch (Exception) { }
+                try
+                {
+                    workers[i].GetData();
+                }
+                catch (Exception) { }
+            }
         }
     }
 }

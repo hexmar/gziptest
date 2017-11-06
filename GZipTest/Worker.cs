@@ -85,76 +85,104 @@ namespace GZipTest
         }
         private void CompressInternal() //TODO: Check exception
         {
-            using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            try
             {
-                Data = new byte[dataBlockSize];
-                while (position < file.Length) // Check position after moving
+                using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
                 {
-                    dataGetted.WaitOne();
-                    if (Abort)
-                        return;
-                    file.Position = position;
-                    long dif = file.Length - file.Position;
-                    if (dif < dataBlockSize)
-                        Data = new byte[dif];
-                    file.Read(Data, 0, Data.Length);
-                    using (var stream = new MemoryStream())
+                    Data = new byte[dataBlockSize];
+                    while (position < file.Length) // Check position after moving
                     {
-                        using (var gz = new GZipStream(stream, CompressionMode.Compress))
+                        dataGetted.WaitOne();
+                        if (Abort)
                         {
-                            gz.Write(Data, 0, Data.Length);
+                            try
+                            {
+                                workDone.Release();
+                            }
+                            catch (Exception) { }
+                            return;
                         }
-                        Compressed = AddExt(stream.ToArray());
+                        file.Position = position;
+                        long dif = file.Length - file.Position;
+                        if (dif < dataBlockSize)
+                            Data = new byte[dif];
+                        file.Read(Data, 0, Data.Length);
+                        using (var stream = new MemoryStream())
+                        {
+                            using (var gz = new GZipStream(stream, CompressionMode.Compress))
+                            {
+                                gz.Write(Data, 0, Data.Length);
+                            }
+                            Compressed = AddExt(stream.ToArray());
+                        }
+                        workDone.Release();
+                        position += threadCount * dataBlockSize; // Moving to next sector
                     }
-                    workDone.Release();
-                    position += threadCount * dataBlockSize; // Moving to next sector
                 }
+                dataGetted.WaitOne();
+                endOfFile = true;
             }
-            dataGetted.WaitOne();
-            endOfFile = true;
+            catch (Exception e)
+            {
+                parent.StopWork(e);
+            }
         }
         private void DecompressInternal()
         {
-            using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            try
             {
-                byte[] info = new byte[18];
-                Data = new byte[dataBlockSize];
-                positionSetted.WaitOne();
-                while (position < file.Length) // Check position after moving
+                using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
                 {
-                    dataGetted.WaitOne();
-                    if (Abort)
-                        return;
-                    file.Position = position;
-                    file.Read(info, 0, info.Length);
-                    if (!ValidExt(info))
+                    byte[] info = new byte[18];
+                    Data = new byte[dataBlockSize];
+                    positionSetted.WaitOne();
+                    while (position < file.Length) // Check position after moving
                     {
-                        //TODO: Send exception to main thread
-                        return;
-                    }
-                    int blockSize = BitConverter.ToInt32(info, info.Length - 4);
-                    parent.SetNextPosition(threadNumber, position + blockSize);
-                    Compressed = new byte[blockSize];
-                    info.CopyTo(Compressed, 0);
-                    file.Read(Compressed, info.Length, Compressed.Length - info.Length);
-                    Compressed = RemoveExt(Compressed);
-                    blockSize = BitConverter.ToInt32(Compressed, Compressed.Length - 4);
-                    if (blockSize != dataBlockSize)
-                        Data = new byte[blockSize];
-                    using (MemoryStream stream = new MemoryStream(Compressed))
-                    {
-                        using (GZipStream gz = new GZipStream(stream, CompressionMode.Decompress))
+                        dataGetted.WaitOne();
+                        if (Abort)
                         {
-                            gz.Read(Data, 0, Data.Length);
+                            try
+                            {
+                                workDone.Release();
+                            }
+                            catch (Exception) { }
+                            return;
                         }
+                        file.Position = position;
+                        file.Read(info, 0, info.Length);
+                        if (!ValidExt(info))
+                        {
+                            parent.StopWork(new Exception("Incompatible file format.\r\n"));
+                            return;
+                        }
+                        int blockSize = BitConverter.ToInt32(info, info.Length - 4);
+                        parent.SetNextPosition(threadNumber, position + blockSize);
+                        Compressed = new byte[blockSize];
+                        info.CopyTo(Compressed, 0);
+                        file.Read(Compressed, info.Length, Compressed.Length - info.Length);
+                        Compressed = RemoveExt(Compressed);
+                        blockSize = BitConverter.ToInt32(Compressed, Compressed.Length - 4);
+                        if (blockSize != dataBlockSize)
+                            Data = new byte[blockSize];
+                        using (MemoryStream stream = new MemoryStream(Compressed))
+                        {
+                            using (GZipStream gz = new GZipStream(stream, CompressionMode.Decompress))
+                            {
+                                gz.Read(Data, 0, Data.Length);
+                            }
+                        }
+                        workDone.Release();
+                        positionSetted.WaitOne(); // Moving to next sector
                     }
-                    workDone.Release();
-                    positionSetted.WaitOne(); // Moving to next sector
+                    parent.SetNextPosition(threadNumber, file.Length);
                 }
-                parent.SetNextPosition(threadNumber, file.Length);
+                dataGetted.WaitOne();
+                endOfFile = true;
             }
-            dataGetted.WaitOne();
-            endOfFile = true;
+            catch (Exception e)
+            {
+                parent.StopWork(e);
+            }
         }
 
         private bool ValidExt(byte[] info)
